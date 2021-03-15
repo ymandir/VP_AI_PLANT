@@ -1,0 +1,62 @@
+#include <torch/torch.h>
+
+#include <cstddef>
+#include <cstdio>
+#include <iostream>
+#include <string>
+#include <vector>
+
+// CHECK https://pytorch.org/tutorials/advanced/cpp_frontend.html documentation
+ 
+
+struct Net : torch::nn::Module {
+	Net(int64_t N, int64_t M) {
+		W = register_parameter("W", torch::randn({ N, M }));
+		b = register_parameter("b", torch::randn(M));
+	}
+	torch::Tensor forward(torch::Tensor input) {
+		return torch::addmm(b, input, W);
+	}
+	torch::Tensor W, b;
+};
+
+
+struct NetPlus : torch::nn::Module {
+	NetPlus(int64_t N, int64_t M)
+	{
+		linear = new torch::nn::Linear(register_module("linear", torch::nn::Linear(N, M)));
+		another_bias = register_parameter("b", torch::randn(M));
+	}
+	torch::Tensor forward(torch::Tensor input) {
+		return (*linear)(input) + another_bias;
+	}
+	torch::nn::Linear* linear;
+	torch::Tensor another_bias;
+};
+
+
+/* PYTORCH TIP : 
+You can find the full list of available built-in modules like torch::nn::Linear, torch::nn::Dropout or torch::nn::Conv2d in the documentation of the torch::nn namespace.
+*/
+
+/* PYTORCH TIP :
+The documentation for torch::nn::Module contains the full list of methods that operate on the module hierarchy.
+*/
+
+int main()
+{
+	Net net(4,5);
+	NetPlus netP(4,5);
+
+	torch::Tensor tensor = torch::eye(3);
+	for (const auto& pair : net.named_parameters()) {
+		std::cout << pair.key() << ": " << pair.value() << std::endl;
+	}
+	std::cout << "---------------------------------------------" << std::endl;
+	for (const auto& pair : netP.named_parameters()) {
+		std::cout << pair.key() << ": " << pair.value() << std::endl;
+	}
+	std::cout << "---------------------------------------------" << std::endl;
+	std::cout << netP.forward(torch::ones({ 2, 4 })) << std::endl;
+	return 0;
+}

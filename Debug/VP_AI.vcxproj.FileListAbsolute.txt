@@ -1,0 +1,2 @@
+W:\Repos\VP_AI\VP_AI\Debug\VP_AI.exe
+W:\Repos\VP_AI\VP_AI\Debug\VP_AI.pdb

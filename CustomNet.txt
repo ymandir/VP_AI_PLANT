@@ -1,0 +1,216 @@
+#include <SFML/Graphics.hpp>
+#include <torch/torch.h>
+#include <cstddef>
+#include <cstdio>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <experimental/filesystem>
+#include "ImageProcessor.h"
+#include "inf_types.h"
+
+
+
+inf::ImageProcessor imp;
+
+// CHECK https://pytorch.org/tutorials/advanced/cpp_frontend.html documentation
+
+// sf::Image to inf::image
+inf::image toInfImage(sf::Image image)
+{
+	inf::image result;
+	imp.copyBufferToImage((void*)image.getPixelsPtr(), image.getSize().x, image.getSize().y, inf::RGBA8, &result);
+	return result;
+}
+
+// inf::Image to sf::image
+sf::Image toSfImage(inf::image image)
+{
+	sf::Texture tex;
+	tex.create(image.sizeX,image.sizeY);
+	tex.update((sf::Uint8*)image.buffer);
+	sf::Image result = tex.copyToImage();
+	return result;
+}
+
+
+// used to load names under a certain path
+void loadNames(std::string path, std::vector<std::string>& nameStack)
+{
+	for (const auto& entry : std::experimental::filesystem::directory_iterator(path))
+	{
+		std::string name = entry.path().string().substr(path.size() + 1, entry.path().string().size() - path.size() - 1);
+		nameStack.push_back(name);
+	}
+}
+
+
+// load images from the path into the given vector 
+void loadImagesFromPath(std::string path, std::vector<sf::Image*>& images)
+{ 
+	std::vector<std::string> catFileNames;
+	loadNames(path, catFileNames);
+
+	// DEBUG
+	int i = 0;
+	int max = 100;
+	// DEBUG
+	for (std::string x : catFileNames)
+	{
+		sf::Image* img = new sf::Image();
+		std::string backString = "/";
+		x = backString.append(x);
+		img->loadFromFile(path.c_str() + x);
+		images.push_back(img);
+
+		// DEBUG
+		i++;
+		if (i >= max) { break; }
+		// DEBUG
+	}
+
+}
+
+
+// image to tensor
+torch::Tensor toTensor(inf::image image)
+{
+	const sf::Uint8* buff = (sf::Uint8*)image.buffer;
+	int sizeX = image.sizeX;
+	int sizeY = image.sizeY;
+	int sizeTotalBuff = sizeX * sizeY * 4;
+	int sizeTotalTensor = sizeX * sizeY * 3;
+
+	torch::Tensor result = torch::ones(sizeTotalTensor);
+	
+	int tensorIndex = 0;
+	for(int i = 0; i < sizeTotalBuff; i ++)
+	{
+		if (((i+1) % 4) == 0) {}
+		else
+		{
+			result[tensorIndex] = buff[i];
+			tensorIndex++;
+		}
+	}
+	return result;
+}
+
+
+
+struct NetPlus : torch::nn::Module {
+	NetPlus(int64_t N)
+	{
+		linear = new torch::nn::Linear(register_module("linear", torch::nn::Linear(N,64)));
+		d = new torch::nn::Dropout(register_module("d", torch::nn::Dropout()));
+		linear2 = new torch::nn::Linear(register_module("linear2", torch::nn::Linear(64, 32)));
+		linear3 = new torch::nn::Linear(register_module("linear3", torch::nn::Linear(32, 2)));
+		another_bias = register_parameter("b", torch::randn(2));
+	}
+	torch::Tensor forward(torch::Tensor input) {
+		input = torch::relu((*linear)(input));
+		input = torch::relu((*d)(input));
+		input = torch::relu((*linear2)(input));
+		input = torch::relu((*linear3)(input));
+		return torch::nn::functional::softmax(input + another_bias,0) ;
+	}
+	torch::nn::Linear* linear;
+	torch::nn::Linear* linear2;
+	torch::nn::Linear* linear3;
+	torch::nn::Dropout* d;
+
+	torch::Tensor another_bias;
+};
+
+
+
+
+/* PYTORCH TIP :
+You can find the full list of available built-in modules like torch::nn::Linear, torch::nn::Dropout or torch::nn::Conv2d in the documentation of the torch::nn namespace.
+*/
+
+/* PYTORCH TIP :
+The documentation for torch::nn::Module contains the full list of methods that operate on the module hierarchy.
+*/
+
+std::vector<sf::Image*> catImages;
+std::vector<sf::Image*> dogImages;
+
+int main()
+{
+	loadImagesFromPath("W:/Repos/Cat&Dog/training_set/training_set/cats",catImages);
+	loadImagesFromPath("W:/Repos/Cat&Dog/training_set/training_set/dogs", dogImages);
+
+	std::cout << catImages.size() << std::endl;
+	std::cout << dogImages.size() << std::endl;
+
+	inf::image imageC = toInfImage(*catImages.at(65));
+	inf::image imageD = toInfImage(*dogImages.at(65));
+	
+	//std::cout << toTensor(imp.bicubicResize(image, 250, 250));
+	
+
+	
+	NetPlus netP(250*250*3);
+	/*
+	std::cout << netP.forward(toTensor(imp.bicubicResize(image, 250, 250))) << std::endl;
+
+	
+
+	torch::Tensor tensor = torch::eye(3);
+	for (const auto& pair : net.named_parameters()) {
+		std::cout << pair.key() << ": " << pair.value() << std::endl;
+	}
+	std::cout << "---------------------------------------------" << std::endl;
+	for (const auto& pair : netP.named_parameters()) {
+		std::cout << pair.key() << ": " << pair.value() << std::endl;
+	}
+	std::cout << "---------------------------------------------" << std::endl;
+	std::cout << netP.forward(torch::ones({ 2, 4 })) << std::endl;
+	std::cout << "---------------------------------------------" << std::endl;
+	*/
+
+
+	
+	torch::optim::Adam optimizer(netP.parameters(), torch::optim::AdamOptions(0.00001));
+
+	torch::Tensor dogTarget = torch::ones(2);
+	dogTarget[0] = 0.000;
+	dogTarget[1] = 1.000;
+
+	torch::Tensor catTarget = torch::ones(2);
+	catTarget[0] = 1.000;
+	catTarget[1] = 0.000;
+
+	// Train
+	for (size_t i = 0; i < 100; i++) {
+		optimizer.zero_grad();
+		if (i % 2)
+		{
+			torch::Tensor output = netP.forward(toTensor(imp.bicubicResize(toInfImage(*catImages.at(i/2)), 250, 250)));
+			auto loss = torch::mse_loss(output, catTarget);
+			std::cout << "Output " << output << " : " << std::endl;
+			std::cout << "Loss " << i << " : " << loss.item<float>() << std::endl;
+			loss.backward();
+			optimizer.step();
+		}
+		else
+		{
+			torch::Tensor output = netP.forward(toTensor(imp.bicubicResize(toInfImage(*dogImages.at(i/2)), 250, 250)));
+			auto loss = torch::mse_loss(output, dogTarget);
+			std::cout << "Output " << output << " : " << std::endl;
+			std::cout << "Loss " << i << " : " << loss.item<float>() << std::endl;
+			loss.backward();
+			optimizer.step();
+		}
+	}
+
+	std::cout << netP.forward(toTensor(imp.bicubicResize(imageC, 250, 250))) << std::endl;
+	std::cout << netP.forward(toTensor(imp.bicubicResize(imageD, 250, 250))) << std::endl;
+
+
+
+	int a;
+	std::cin >> a;
+	return 0;
+}
